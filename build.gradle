@@ -1,4 +1,4 @@
-group 'ru.tisov.denis.hadoop'
+group 'ru.tisov.denis.hadoop.first'
 version '1.0-SNAPSHOT'
 
 apply plugin: 'java'
@@ -11,13 +11,12 @@ repositories {
     mavenCentral()
 }
 
-
 jar {
     archiveName 'ReverseSearchIndex.jar'
 
     manifest {
         attributes 'Implementation-Title': 'Gradle Quickstart',
-                'Main-Class': 'ru.mipt.hadoop.ReverseSearchIndex'
+                'Main-Class': 'ru.tisov.denis.hadoop.first.ReverseSearchIndex'
     }
 }
 

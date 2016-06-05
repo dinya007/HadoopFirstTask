@@ -5,8 +5,6 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.io.WritableComparable;
-import org.apache.hadoop.io.WritableComparator;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
@@ -31,6 +29,7 @@ public class ReverseSearchIndex {
     private static final String SPACE = "\\s+";
     private static final String NON_CHARACTER = "[^A-Za-z0-9 ]";
     private static final int NUM_REDUCE_TASKS = 5;
+    private static final String TAB = "\\t+";
 
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration();
@@ -38,11 +37,14 @@ public class ReverseSearchIndex {
         FileSystem fileSystem = FileSystem.newInstance(conf);
 
         Path firstJobInput = new Path(args[0]);
-        Path firstJobOutput = new Path(args[1] + "-inter");
+        String firstJobOutputPathName = args[1] + "-inter";
+        Path firstJobOutput = new Path(firstJobOutputPathName);
         Path secondJobOutput = new Path(args[2]);
 
         fileSystem.deleteOnExit(firstJobOutput);
         fileSystem.delete(secondJobOutput, true);
+        fileSystem.delete(firstJobOutput, true);
+        fileSystem.delete(new Path(firstJobOutputPathName + "partitioner"), true);
 
         Job firstMapJob = initFirstJob(conf, firstJobInput, firstJobOutput);
 
@@ -51,6 +53,21 @@ public class ReverseSearchIndex {
         Job secondJob = initSecondJob(conf, firstJobOutput, secondJobOutput);
 
         secondJob.waitForCompletion(true);
+    }
+
+    private static Job initFirstJob(Configuration conf, Path mapInputPath, Path mapOutputPath) throws IOException {
+        Job firstMapJob = Job.getInstance(conf, "First Map");
+        firstMapJob.setJarByClass(ReverseSearchIndex.class);
+        firstMapJob.setMapperClass(FirstMapper.class);
+        firstMapJob.setOutputKeyClass(Text.class);
+        firstMapJob.setOutputValueClass(Text.class);
+        TextInputFormat.setInputPaths(firstMapJob, mapInputPath);
+
+        firstMapJob.setNumReduceTasks(NUM_REDUCE_TASKS);
+        firstMapJob.setReducerClass(FirstReducer.class);
+        FileInputFormat.addInputPath(firstMapJob, mapInputPath);
+        FileOutputFormat.setOutputPath(firstMapJob, mapOutputPath);
+        return firstMapJob;
     }
 
     private static Job initSecondJob(Configuration conf, Path inputPath, Path mapOutputPath) throws IOException {
@@ -65,7 +82,7 @@ public class ReverseSearchIndex {
 
         job.setOutputKeyClass(LongWritable.class);
         job.setOutputValueClass(Text.class);
-        job.setSortComparatorClass(SortComparator.class);
+        job.setSortComparatorClass(LongWritable.DecreasingComparator.class);
 
         FileInputFormat.setInputPaths(job, inputPath);
         FileOutputFormat.setOutputPath(job, new Path(mapOutputPath
@@ -85,38 +102,6 @@ public class ReverseSearchIndex {
         }
 
         return job;
-    }
-
-    private static InputSampler.Sampler getSampler() {
-        double pcnt = 10.0;
-        int numSamples = NUM_REDUCE_TASKS;
-        int maxSplits = NUM_REDUCE_TASKS - 1;
-        if (0 >= maxSplits)
-            maxSplits = Integer.MAX_VALUE;
-
-        return new InputSampler.RandomSampler(pcnt,
-                numSamples, maxSplits);
-    }
-
-    private static Job initFirstJob(Configuration conf, Path mapInputPath, Path mapOutputPath) throws IOException {
-        Job firstMapJob = Job.getInstance(conf, "First Map");
-        firstMapJob.setJarByClass(ReverseSearchIndex.class);
-        firstMapJob.setMapperClass(FirstMapper.class);
-        firstMapJob.setOutputKeyClass(Text.class);
-        firstMapJob.setOutputValueClass(Text.class);
-        TextInputFormat.setInputPaths(firstMapJob, mapInputPath);
-
-        firstMapJob.setNumReduceTasks(NUM_REDUCE_TASKS);
-        firstMapJob.setReducerClass(FirstReducer.class);
-        FileInputFormat.addInputPath(firstMapJob, mapInputPath);
-        FileOutputFormat.setOutputPath(firstMapJob, mapOutputPath);
-        return firstMapJob;
-    }
-
-    private static String getCurrentDateTime() {
-        Date d = new Date();
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.dd.HH.mm.ss");
-        return sdf.format(d);
     }
 
     private static class FirstMapper extends Mapper<Object, Text, Text, Text> {
@@ -153,12 +138,8 @@ public class ReverseSearchIndex {
     private static class FirstReducer extends Reducer<Text, Text, LongWritable, Text> {
         @Override
         public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
-            if (key.toString().startsWith("T")) {
-                System.out.println(key);
-            }
             Set<Text> result = new HashSet<>();
             for (Text value : values) {
-
                 result.add(value);
             }
             context.write(new LongWritable((long) result.size()), key);
@@ -169,7 +150,13 @@ public class ReverseSearchIndex {
 
         @Override
         public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
-            context.write(key, value);
+            String[] input = value.toString().split(TAB);
+
+            if (input.length < 2) return;
+
+            String occurrences = input[0];
+            String word = input[1];
+            context.write(new LongWritable(Long.parseLong(occurrences)), new Text(word));
         }
 
     }
@@ -178,27 +165,30 @@ public class ReverseSearchIndex {
         @Override
         public void reduce(LongWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
             Iterator<Text> iterator = values.iterator();
-            if (iterator.hasNext()) context.write(iterator.next(), key);
-        }
-    }
-
-    private static class SortComparator extends WritableComparator {
-
-        protected SortComparator() {
-            super(LongWritable.class, true);
-        }
-
-        @Override
-        public int compare(WritableComparable a, WritableComparable b) {
-            LongWritable o1 = (LongWritable) a;
-            LongWritable o2 = (LongWritable) b;
-            if (o1.get() < o2.get()) {
-                return 1;
-            } else if (o1.get() > o2.get()) {
-                return -1;
-            } else {
-                return 0;
+            if (iterator.hasNext()) {
+                Text next = iterator.next();
+                String string = next + " " + key.toString();
+                System.out.println(string);
+                context.write(new Text(string), new LongWritable(0L));
             }
         }
     }
+
+    private static String getCurrentDateTime() {
+        Date d = new Date();
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.dd.HH.mm.ss");
+        return sdf.format(d);
+    }
+
+    private static InputSampler.Sampler getSampler() {
+        double pcnt = 10.0;
+        int numSamples = NUM_REDUCE_TASKS;
+        int maxSplits = NUM_REDUCE_TASKS - 1;
+        if (0 >= maxSplits)
+            maxSplits = Integer.MAX_VALUE;
+
+        return new InputSampler.RandomSampler(pcnt,
+                numSamples, maxSplits);
+    }
+
 }
