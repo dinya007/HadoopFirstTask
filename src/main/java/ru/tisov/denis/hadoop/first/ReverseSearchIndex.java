@@ -184,8 +184,6 @@ public class ReverseSearchIndex {
         double pcnt = 10.0;
         int numSamples = NUM_REDUCE_TASKS;
         int maxSplits = NUM_REDUCE_TASKS - 1;
-        if (0 >= maxSplits)
-            maxSplits = Integer.MAX_VALUE;
 
         return new InputSampler.RandomSampler(pcnt,
                 numSamples, maxSplits);
